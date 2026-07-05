@@ -234,6 +234,9 @@ async function processDeal(dealId) {
   await addTimelineComment(dealId, message);
 }
 
+// Проверка живости сервиса (для healthcheck платформы деплоя, ожидающей ответ на "/")
+app.get('/', (req, res) => res.status(200).send('ok'));
+
 // Проверка живости сервиса
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
