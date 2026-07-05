@@ -33,6 +33,22 @@ if (!B24_WEBHOOK_URL) {
   process.exit(1);
 }
 
+// Извлекаем домен портала (например https://b24-7ziwc7.bitrix24.ru) из URL входящего вебхука,
+// чтобы формировать прямые ссылки на карточки сделок в комментариях.
+const PORTAL_BASE_URL = (() => {
+  try {
+    const u = new URL(B24_WEBHOOK_URL);
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return null;
+  }
+})();
+
+function dealUrl(dealId) {
+  if (!PORTAL_BASE_URL) return null;
+  return `${PORTAL_BASE_URL}/crm/deal/details/${dealId}/`;
+}
+
 function b24(method) {
   return `${B24_WEBHOOK_URL.replace(/\/$/, '')}/${method}`;
 }
@@ -153,13 +169,25 @@ async function addTimelineComment(dealId, text) {
   });
 }
 
+/** Проставить признак "дубль" (UF_CRM_1783286815 = 1) в сделке */
+async function markDealAsDuplicate(dealId) {
+  return callB24('crm.deal.update', {
+    id: dealId,
+    fields: {
+      UF_CRM_1783286815: 1,
+    },
+  });
+}
+
 function buildDuplicateMessage(duplicates) {
   const lines = [
     `⚠️ Обнаружены возможные дубликаты сделки (${duplicates.length}):`,
   ];
   duplicates.slice(0, 10).forEach((d) => {
+    const url = dealUrl(d.ID);
+    const dealLabel = url ? `[URL=${url}]Сделка #${d.ID} "${d.TITLE}"[/URL]` : `Сделка #${d.ID} "${d.TITLE}"`;
     lines.push(
-      `— Сделка #${d.ID} "${d.TITLE}" (стадия: ${d.STAGE_ID}, создана: ${d.DATE_CREATE})`
+      `— ${dealLabel} (стадия: ${d.STAGE_ID}, создана: ${d.DATE_CREATE})`
     );
   });
   if (duplicates.length > 10) {
@@ -232,6 +260,8 @@ async function processDeal(dealId) {
 
   const message = buildDuplicateMessage(duplicates);
   await addTimelineComment(dealId, message);
+  await markDealAsDuplicate(dealId);
+  console.log(`Сделка ${dealId}: поле UF_CRM_1783286815 установлено в 1 (обнаружен дубль)`);
 }
 
 // Проверка живости сервиса (для healthcheck платформы деплоя, ожидающей ответ на "/")
