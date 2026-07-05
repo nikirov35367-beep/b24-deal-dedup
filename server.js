@@ -49,6 +49,61 @@ function dealUrl(dealId) {
   return `${PORTAL_BASE_URL}/crm/deal/details/${dealId}/`;
 }
 
+// Кэш справочника стадий сделок (STATUS_ID -> SEMANTICS: 'P' в работе, 'S' успех, 'F' провал).
+// Обновляется раз в 10 минут, чтобы не дёргать API на каждый запрос.
+let stageSemanticsCache = null;
+let stageSemanticsCacheAt = 0;
+const STAGE_CACHE_TTL_MS = 10 * 60 * 1000;
+
+async function getStageSemanticsMap() {
+  const now = Date.now();
+  if (stageSemanticsCache && now - stageSemanticsCacheAt < STAGE_CACHE_TTL_MS) {
+    return stageSemanticsCache;
+  }
+
+  // crm.status.list возвращает все статусы всех справочников, включая стадии сделок
+  // по всем воронкам (DEAL_STAGE и DEAL_STAGE_<CATEGORY_ID>).
+  const statuses = await callB24('crm.status.list', {
+    filter: { ENTITY_ID: 'DEAL_STAGE' },
+  });
+
+  const map = new Map();
+  (statuses || []).forEach((s) => {
+    map.set(s.STATUS_ID, s.SEMANTICS);
+  });
+
+  // Дополнительно подтягиваем стадии из остальных воронок (DEAL_STAGE_<ID>),
+  // так как базовый DEAL_STAGE покрывает только воронку по умолчанию.
+  try {
+    const categories = await callB24('crm.dealcategory.list', {});
+    for (const cat of categories || []) {
+      if (String(cat.ID) === '0') continue; // основная воронка уже учтена выше
+      const catStatuses = await callB24('crm.status.list', {
+        filter: { ENTITY_ID: `DEAL_STAGE_${cat.ID}` },
+      });
+      (catStatuses || []).forEach((s) => {
+        map.set(s.STATUS_ID, s.SEMANTICS);
+      });
+    }
+  } catch (err) {
+    console.warn('Не удалось получить стадии дополнительных воронок:', err.message);
+  }
+
+  stageSemanticsCache = map;
+  stageSemanticsCacheAt = now;
+  return map;
+}
+
+/** Считать сделку "в работе", если её стадия не имеет семантику успеха (S) или провала (F) */
+async function isDealOpen(deal) {
+  const map = await getStageSemanticsMap();
+  const semantics = map.get(deal.STAGE_ID);
+  // Если семантика неизвестна (не нашли в справочнике) — по умолчанию считаем сделку открытой,
+  // чтобы не пропустить реальный дубль из-за отсутствия данных.
+  if (!semantics) return true;
+  return semantics === 'P';
+}
+
 function b24(method) {
   return `${B24_WEBHOOK_URL.replace(/\/$/, '')}/${method}`;
 }
@@ -179,10 +234,11 @@ async function markDealAsDuplicate(dealId) {
   });
 }
 
-function buildDuplicateMessage(duplicates) {
-  const lines = [
-    `⚠️ Обнаружены возможные дубликаты сделки (${duplicates.length}):`,
-  ];
+function buildDuplicateMessage(duplicates, hasOpenDuplicate) {
+  const header = hasOpenDuplicate
+    ? `⚠️ Обнаружены возможные дубликаты сделки (${duplicates.length}), есть открытые:`
+    : `ℹ️ Найдены сделки этого же контакта (${duplicates.length}), но все они уже закрыты (успех/провал) — информационно:`;
+  const lines = [header];
   duplicates.slice(0, 10).forEach((d) => {
     const url = dealUrl(d.ID);
     const dealLabel = url ? `[URL=${url}]Сделка #${d.ID} "${d.TITLE}"[/URL]` : `Сделка #${d.ID} "${d.TITLE}"`;
@@ -258,10 +314,19 @@ async function processDeal(dealId) {
     `Сделка ${dealId}: найдено ${duplicates.length} дубликатов (совпадение: ${JSON.stringify(matchedBy)})`
   );
 
-  const message = buildDuplicateMessage(duplicates);
+  // Проверяем, есть ли среди дублей хотя бы одна открытая ("в работе") сделка
+  const openFlags = await Promise.all(duplicates.map((d) => isDealOpen(d)));
+  const hasOpenDuplicate = openFlags.some(Boolean);
+
+  const message = buildDuplicateMessage(duplicates, hasOpenDuplicate);
   await addTimelineComment(dealId, message);
-  await markDealAsDuplicate(dealId);
-  console.log(`Сделка ${dealId}: поле UF_CRM_1783286815 установлено в 1 (обнаружен дубль)`);
+
+  if (hasOpenDuplicate) {
+    await markDealAsDuplicate(dealId);
+    console.log(`Сделка ${dealId}: поле UF_CRM_1783286815 установлено в 1 (есть открытый дубль)`);
+  } else {
+    console.log(`Сделка ${dealId}: все дубли закрыты (успех/провал), флаг дубля не ставим`);
+  }
 }
 
 // Проверка живости сервиса (для healthcheck платформы деплоя, ожидающей ответ на "/")
