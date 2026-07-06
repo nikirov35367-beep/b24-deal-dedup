@@ -14,8 +14,6 @@
 
 const express = require('express');
 const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
 
 const app = express();
 app.use(express.urlencoded({ extended: true }));
@@ -23,99 +21,12 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// Файл персистентной очереди отложенных запусков БП — переживает рестарт/деплой процесса.
-// Хранится рядом со скриптом, а не в /tmp, чтобы не потерять при перезагрузке ОС.
-const BIZPROC_QUEUE_FILE = path.join(__dirname, 'bizproc-queue.json');
-
 // Входящий вебхук Битрикс24, например:
 // https://yourportal.bitrix24.ru/rest/1/xxxxxxxxxxxxxxxx/
 const B24_WEBHOOK_URL = process.env.B24_WEBHOOK_URL;
 
 // Секрет для проверки исходящего вебхука Битрикс24 (application_token из настроек вебхука)
 const B24_APP_TOKEN = process.env.B24_APP_TOKEN || '';
-
-// Отдельный входящий вебхук с правами на запуск бизнес-процессов (bizproc.workflow.start)
-const B24_BIZPROC_WEBHOOK_URL = process.env.B24_BIZPROC_WEBHOOK_URL;
-
-// ID шаблона бизнес-процесса, который нужно запускать при создании каждой сделки
-const DEAL_BIZPROC_TEMPLATE_ID = process.env.DEAL_BIZPROC_TEMPLATE_ID || '47';
-
-// Задержка перед запуском бизнес-процесса (в миллисекундах)
-const BIZPROC_START_DELAY_MS = 2 * 60 * 1000;
-
-/**
- * Персистентная очередь отложенных запусков БП.
- * Формат файла: { "<dealId>": <timestamp запуска в ms>, ... }
- * При каждом старте сервиса очередь читается с диска: задачи, время которых
- * уже наступило (в том числе просроченные из-за рестарта/деплоя), запускаются
- * немедленно; остальные планируются через оставшееся время.
- */
-function readBizprocQueue() {
-  try {
-    if (!fs.existsSync(BIZPROC_QUEUE_FILE)) return {};
-    const raw = fs.readFileSync(BIZPROC_QUEUE_FILE, 'utf8');
-    return raw ? JSON.parse(raw) : {};
-  } catch (err) {
-    console.error('Не удалось прочитать очередь БП, начинаем с пустой:', err.message);
-    return {};
-  }
-}
-
-function writeBizprocQueue(queue) {
-  try {
-    fs.writeFileSync(BIZPROC_QUEUE_FILE, JSON.stringify(queue), 'utf8');
-  } catch (err) {
-    console.error('Не удалось сохранить очередь БП на диск:', err.message);
-  }
-}
-
-/** Добавить сделку в очередь на запуск БП через BIZPROC_START_DELAY_MS и запланировать в памяти */
-function scheduleBizproc(dealId) {
-  const runAt = Date.now() + BIZPROC_START_DELAY_MS;
-  const queue = readBizprocQueue();
-  queue[dealId] = runAt;
-  writeBizprocQueue(queue);
-  armBizprocTimer(dealId, runAt);
-}
-
-/** Убрать сделку из очереди после успешного (или окончательно неудачного) запуска БП */
-function removeFromBizprocQueue(dealId) {
-  const queue = readBizprocQueue();
-  delete queue[dealId];
-  writeBizprocQueue(queue);
-}
-
-/** Поставить in-memory таймер на конкретный момент времени (учитывая уже прошедшее время) */
-function armBizprocTimer(dealId, runAt) {
-  const delay = Math.max(0, runAt - Date.now());
-  setTimeout(() => {
-    startDealBizproc(dealId)
-      .then(() => {
-        console.log(`Сделка ${dealId}: запущен бизнес-процесс #${DEAL_BIZPROC_TEMPLATE_ID}`);
-        removeFromBizprocQueue(dealId);
-      })
-      .catch((err) => {
-        console.error(`Сделка ${dealId}: ошибка запуска бизнес-процесса:`, err.message);
-        // Не убираем из очереди — при следующем рестарте сервиса попытка повторится.
-      });
-  }, delay);
-}
-
-/**
- * При старте сервиса подхватываем все задачи из персистентной очереди:
- * просроченные (runAt уже в прошлом) запускаются почти немедленно,
- * остальные — через оставшееся время. Так задержка переживает деплой/рестарт.
- */
-function resumeBizprocQueueOnStartup() {
-  const queue = readBizprocQueue();
-  const dealIds = Object.keys(queue);
-  if (dealIds.length === 0) return;
-
-  console.log(`Восстановление очереди БП после рестарта: ${dealIds.length} отложенных задач`);
-  dealIds.forEach((dealId) => {
-    armBizprocTimer(dealId, queue[dealId]);
-  });
-}
 
 if (!B24_WEBHOOK_URL) {
   console.error('ОШИБКА: не задана переменная окружения B24_WEBHOOK_URL');
@@ -250,32 +161,6 @@ async function getDeal(dealId) {
 /** Получить контакт по id */
 async function getContact(contactId) {
   return callB24('crm.contact.get', { id: contactId });
-}
-
-/** Запустить бизнес-процесс на сделке через отдельный вебхук bizproc.workflow.start */
-async function startDealBizproc(dealId) {
-  if (!B24_BIZPROC_WEBHOOK_URL) {
-    console.warn(
-      `Сделка ${dealId}: не задана переменная B24_BIZPROC_WEBHOOK_URL, запуск БП пропущен`
-    );
-    return;
-  }
-
-  const url = `${B24_BIZPROC_WEBHOOK_URL.replace(/\/$/, '')}/bizproc.workflow.start.json`;
-  const { data } = await axios.post(
-    url,
-    {
-      TEMPLATE_ID: DEAL_BIZPROC_TEMPLATE_ID,
-      DOCUMENT_ID: ['crm', 'CCrmDocumentDeal', `DEAL_${dealId}`],
-    },
-    { timeout: 15000 }
-  );
-
-  if (data.error) {
-    throw new Error(`bizproc.workflow.start error: ${data.error_description || data.error}`);
-  }
-
-  return data.result;
 }
 
 /** Извлечь номера телефонов и email из контакта (нормализованные) */
@@ -442,11 +327,6 @@ app.post('/webhook/deal-add', async (req, res) => {
     processDeal(dealId).catch((err) => {
       console.error('Ошибка обработки сделки', dealId, err.message);
     });
-
-    // Планируем запуск бизнес-процесса #47 через персистентную очередь —
-    // задача сохраняется на диск и переживает рестарт/деплой процесса.
-    // Запускается всегда, независимо от результата поиска дублей.
-    scheduleBizproc(dealId);
   } catch (err) {
     console.error('Ошибка в обработчике webhook', err);
     if (!res.headersSent) res.status(500).send('error');
@@ -515,5 +395,4 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.listen(PORT, () => {
   console.log(`Сервис поиска дубликатов сделок запущен на порту ${PORT}`);
-  resumeBizprocQueueOnStartup();
 });
