@@ -127,6 +127,41 @@ async function callB24(method, params = {}) {
   return data.result;
 }
 
+/**
+ * Полный постраничный обход списочных методов (crm.contact.list, crm.deal.list и т.п.).
+ * Битрикс24 REST API отдаёт максимум 50 записей за вызов; в ответе поле `next`
+ * указывает смещение для следующей страницы, а `total` — общее число записей.
+ * Без этого обхода при более чем 50 совпадениях часть данных (обычно самые новые
+ * записи) просто не возвращается, и поиск дублей перестаёт находить их.
+ */
+async function callB24List(method, params = {}) {
+  let start = 0;
+  let allResults = [];
+
+  while (true) {
+    const { data } = await axios.post(
+      b24(method),
+      { ...params, start },
+      { timeout: 15000 }
+    );
+
+    if (data.error) {
+      throw new Error(`B24 API error [${method}]: ${data.error_description || data.error}`);
+    }
+
+    const page = data.result || [];
+    allResults = allResults.concat(page);
+
+    if (typeof data.next === 'number') {
+      start = data.next;
+    } else {
+      break; // страниц больше нет
+    }
+  }
+
+  return allResults;
+}
+
 /** Получить сделку по id */
 async function getDeal(dealId) {
   return callB24('crm.deal.get', { id: dealId });
@@ -203,18 +238,18 @@ async function findDuplicateDeals(currentDealId, contact) {
 
   const matchedContactIds = new Set();
 
-  // Поиск контактов по телефону
+  // Поиск контактов по телефону (полный постраничный обход — совпадений может быть > 50)
   for (const phone of phones) {
-    const contacts = await callB24('crm.contact.list', {
+    const contacts = await callB24List('crm.contact.list', {
       filter: { PHONE: phone },
       select: ['ID'],
     });
     contacts.forEach((c) => matchedContactIds.add(c.ID));
   }
 
-  // Поиск контактов по email
+  // Поиск контактов по email (полный постраничный обход)
   for (const email of emails) {
-    const contacts = await callB24('crm.contact.list', {
+    const contacts = await callB24List('crm.contact.list', {
       filter: { EMAIL: email },
       select: ['ID'],
     });
@@ -225,10 +260,10 @@ async function findDuplicateDeals(currentDealId, contact) {
     return { duplicates: [], matchedBy: null };
   }
 
-  // Для каждого совпавшего контакта получаем его сделки
+  // Для каждого совпавшего контакта получаем его сделки (тоже с полным постраничным обходом)
   const allDeals = [];
   for (const contactId of matchedContactIds) {
-    const deals = await callB24('crm.deal.list', {
+    const deals = await callB24List('crm.deal.list', {
       filter: { CONTACT_ID: contactId },
       select: ['ID', 'TITLE', 'STAGE_ID', 'OPPORTUNITY', 'DATE_CREATE', 'ASSIGNED_BY_ID'],
     });
