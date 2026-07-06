@@ -168,27 +168,48 @@ async function getLead(leadId) {
   return callB24('crm.lead.get', { id: leadId });
 }
 
-/** Извлечь номера телефонов и email из контакта (нормализованные) */
+/** Извлечь номера телефонов и email из контакта/лида (нормализованные + оригинальные) */
 function extractContactKeys(contact) {
-  const phones = (contact.PHONE || [])
-    .map((p) => normalizePhone(p.VALUE))
+  const rawPhones = (contact.PHONE || [])
+    .map((p) => (p.VALUE || '').trim())
     .filter(Boolean);
   const emails = (contact.EMAIL || [])
     .map((e) => (e.VALUE || '').trim().toLowerCase())
     .filter(Boolean);
-  return { phones, emails };
+  return { rawPhones, emails };
 }
 
-function normalizePhone(raw) {
-  if (!raw) return null;
-  // оставляем только цифры, отбрасываем ведущие + и лишние символы
+/**
+ * Битрикс24 хранит телефон ровно в том виде, в котором он был введён
+ * (с "+" или без, с "8" или "7" в начале), и crm.contact.list фильтрует
+ * по ТОЧНОМУ совпадению строки — без какой-либо нормализации на своей стороне.
+ * Поэтому для поиска дублей нужно перебрать несколько правдоподобных
+ * вариантов написания одного и того же номера, а не только "нормализованный".
+ */
+function buildPhoneVariants(raw) {
+  if (!raw) return [];
+  const variants = new Set();
+  variants.add(raw); // как есть, оригинал — важно проверить именно его первым
+
   const digits = raw.replace(/\D/g, '');
-  if (!digits) return null;
-  // приводим российские номера 8XXXXXXXXXX -> 7XXXXXXXXXX для единообразия
+  if (!digits) return Array.from(variants);
+
+  variants.add(digits); // только цифры, без "+"
+  variants.add(`+${digits}`); // с "+"
+
+  // Российские номера: 8XXXXXXXXXX <-> 7XXXXXXXXXX <-> +7XXXXXXXXXX
   if (digits.length === 11 && digits.startsWith('8')) {
-    return '7' + digits.slice(1);
+    const with7 = '7' + digits.slice(1);
+    variants.add(with7);
+    variants.add(`+${with7}`);
   }
-  return digits;
+  if (digits.length === 11 && digits.startsWith('7')) {
+    const with8 = '8' + digits.slice(1);
+    variants.add(with8);
+    variants.add(`+${with8}`);
+  }
+
+  return Array.from(variants);
 }
 
 /**
@@ -201,20 +222,27 @@ function normalizePhone(raw) {
  * 3. Исключить текущую сделку и вернуть остальные.
  */
 async function findDuplicateDeals(currentDealId, contact) {
-  const { phones, emails } = extractContactKeys(contact);
-  if (phones.length === 0 && emails.length === 0) {
+  const { rawPhones, emails } = extractContactKeys(contact);
+  if (rawPhones.length === 0 && emails.length === 0) {
     return { duplicates: [], matchedBy: null };
   }
 
   const matchedContactIds = new Set();
 
-  // Поиск контактов по телефону (полный постраничный обход — совпадений может быть > 50)
-  for (const phone of phones) {
-    const contacts = await callB24List('crm.contact.list', {
-      filter: { PHONE: phone },
-      select: ['ID'],
-    });
-    contacts.forEach((c) => matchedContactIds.add(c.ID));
+  // Поиск контактов по телефону — Битрикс24 фильтрует по точному совпадению строки,
+  // поэтому перебираем все правдоподобные варианты написания номера (с "+", без,
+  // с "8" вместо "7" и т.д.), а не только один нормализованный вариант.
+  const triedPhoneVariants = new Set();
+  for (const rawPhone of rawPhones) {
+    for (const variant of buildPhoneVariants(rawPhone)) {
+      if (triedPhoneVariants.has(variant)) continue; // не дублируем одинаковые запросы
+      triedPhoneVariants.add(variant);
+      const contacts = await callB24List('crm.contact.list', {
+        filter: { PHONE: variant },
+        select: ['ID'],
+      });
+      contacts.forEach((c) => matchedContactIds.add(c.ID));
+    }
   }
 
   // Поиск контактов по email (полный постраничный обход)
@@ -250,7 +278,7 @@ async function findDuplicateDeals(currentDealId, contact) {
     duplicates.push(deal);
   }
 
-  return { duplicates, matchedBy: { phones, emails } };
+  return { duplicates, matchedBy: { phones: rawPhones, emails } };
 }
 
 /** Добавить комментарий в таймлайн сделки */
