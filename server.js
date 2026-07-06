@@ -35,7 +35,7 @@ const B24_BIZPROC_WEBHOOK_URL = process.env.B24_BIZPROC_WEBHOOK_URL;
 const DEAL_BIZPROC_TEMPLATE_ID = process.env.DEAL_BIZPROC_TEMPLATE_ID || '47';
 
 // Задержка перед запуском бизнес-процесса (в миллисекундах)
-const BIZPROC_START_DELAY_MS = 10 * 1000;
+const BIZPROC_START_DELAY_MS = 2 * 60 * 1000;
 
 if (!B24_WEBHOOK_URL) {
   console.error('ОШИБКА: не задана переменная окружения B24_WEBHOOK_URL');
