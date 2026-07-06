@@ -396,16 +396,31 @@ async function processDeal(dealId) {
     `Сделка ${dealId}: найдено ${duplicates.length} дубликатов (совпадение: ${JSON.stringify(matchedBy)})`
   );
 
-  // Проверяем, есть ли среди дублей хотя бы одна открытая ("в работе") сделка
+  // Проверяем, какие из дублей открыты ("в работе")
   const openFlags = await Promise.all(duplicates.map((d) => isDealOpen(d)));
-  const hasOpenDuplicate = openFlags.some(Boolean);
+  const openDuplicates = duplicates.filter((_, i) => openFlags[i]);
+  const hasOpenDuplicate = openDuplicates.length > 0;
+
+  // "Оригинал" ищем только среди ОТКРЫТЫХ сделок — текущая новая сделка
+  // всегда считается открытой (она только что создана), закрытые дубли
+  // (успех/провал) в расчёт эталона не берём вообще.
+  // Самая ранняя по ID среди открытых кандидатов — оригинал, флаг ей не ставим.
+  const openCandidateIds = [Number(dealId), ...openDuplicates.map((d) => Number(d.ID))];
+  const earliestOpenDealId = Math.min(...openCandidateIds);
+  const currentIsEarliestOpen = Number(dealId) === earliestOpenDealId;
 
   const message = buildDuplicateMessage(duplicates, hasOpenDuplicate);
   await addTimelineComment(dealId, message);
 
-  if (hasOpenDuplicate) {
+  if (hasOpenDuplicate && !currentIsEarliestOpen) {
     await markDealAsDuplicate(dealId);
-    console.log(`Сделка ${dealId}: поле UF_CRM_1783286815 установлено в 1 (есть открытый дубль)`);
+    console.log(
+      `Сделка ${dealId}: поле UF_CRM_1783286815 установлено в 1 (есть открытый дубль, оригинал — сделка ${earliestOpenDealId})`
+    );
+  } else if (hasOpenDuplicate && currentIsEarliestOpen) {
+    console.log(
+      `Сделка ${dealId}: это самая ранняя открытая сделка среди дублей (оригинал), флаг не ставим`
+    );
   } else {
     console.log(`Сделка ${dealId}: все дубли закрыты (успех/провал), флаг дубля не ставим`);
   }
