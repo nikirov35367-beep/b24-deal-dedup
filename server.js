@@ -28,6 +28,15 @@ const B24_WEBHOOK_URL = process.env.B24_WEBHOOK_URL;
 // Секрет для проверки исходящего вебхука Битрикс24 (application_token из настроек вебхука)
 const B24_APP_TOKEN = process.env.B24_APP_TOKEN || '';
 
+// Отдельный входящий вебхук с правами на запуск бизнес-процессов (bizproc.workflow.start)
+const B24_BIZPROC_WEBHOOK_URL = process.env.B24_BIZPROC_WEBHOOK_URL;
+
+// ID шаблона бизнес-процесса, который нужно запускать при создании каждой сделки
+const DEAL_BIZPROC_TEMPLATE_ID = process.env.DEAL_BIZPROC_TEMPLATE_ID || '47';
+
+// Задержка перед запуском бизнес-процесса (в миллисекундах)
+const BIZPROC_START_DELAY_MS = 10 * 1000;
+
 if (!B24_WEBHOOK_URL) {
   console.error('ОШИБКА: не задана переменная окружения B24_WEBHOOK_URL');
   process.exit(1);
@@ -126,6 +135,32 @@ async function getDeal(dealId) {
 /** Получить контакт по id */
 async function getContact(contactId) {
   return callB24('crm.contact.get', { id: contactId });
+}
+
+/** Запустить бизнес-процесс на сделке через отдельный вебхук bizproc.workflow.start */
+async function startDealBizproc(dealId) {
+  if (!B24_BIZPROC_WEBHOOK_URL) {
+    console.warn(
+      `Сделка ${dealId}: не задана переменная B24_BIZPROC_WEBHOOK_URL, запуск БП пропущен`
+    );
+    return;
+  }
+
+  const url = `${B24_BIZPROC_WEBHOOK_URL.replace(/\/$/, '')}/bizproc.workflow.start.json`;
+  const { data } = await axios.post(
+    url,
+    {
+      TEMPLATE_ID: DEAL_BIZPROC_TEMPLATE_ID,
+      DOCUMENT_ID: ['crm', 'CCrmDocumentDeal', `DEAL_${dealId}`],
+    },
+    { timeout: 15000 }
+  );
+
+  if (data.error) {
+    throw new Error(`bizproc.workflow.start error: ${data.error_description || data.error}`);
+  }
+
+  return data.result;
 }
 
 /** Извлечь номера телефонов и email из контакта (нормализованные) */
@@ -284,6 +319,18 @@ app.post('/webhook/deal-add', async (req, res) => {
     processDeal(dealId).catch((err) => {
       console.error('Ошибка обработки сделки', dealId, err.message);
     });
+
+    // Запуск бизнес-процесса #47 через 10 секунд после создания сделки —
+    // всегда, независимо от результата поиска дублей.
+    setTimeout(() => {
+      startDealBizproc(dealId)
+        .then(() => {
+          console.log(`Сделка ${dealId}: запущен бизнес-процесс #${DEAL_BIZPROC_TEMPLATE_ID}`);
+        })
+        .catch((err) => {
+          console.error(`Сделка ${dealId}: ошибка запуска бизнес-процесса:`, err.message);
+        });
+    }, BIZPROC_START_DELAY_MS);
   } catch (err) {
     console.error('Ошибка в обработчике webhook', err);
     if (!res.headersSent) res.status(500).send('error');
