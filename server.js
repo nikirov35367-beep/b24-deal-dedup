@@ -163,6 +163,11 @@ async function getContact(contactId) {
   return callB24('crm.contact.get', { id: contactId });
 }
 
+/** Получить лид по id (используется, когда у сделки нет привязанного контакта) */
+async function getLead(leadId) {
+  return callB24('crm.lead.get', { id: leadId });
+}
+
 /** Извлечь номера телефонов и email из контакта (нормализованные) */
 function extractContactKeys(contact) {
   const phones = (contact.PHONE || [])
@@ -340,13 +345,30 @@ async function processDeal(dealId) {
     return;
   }
 
-  if (!deal.CONTACT_ID) {
-    console.log(`Сделка ${dealId}: нет привязанного контакта, проверка дублей пропущена`);
+  // Битрикс24 возвращает CONTACT_ID как строку "0" (не null, не отсутствует),
+  // если контакт не привязан к сделке — это truthy-значение в JS, поэтому
+  // сравниваем численно, а не просто проверяем на "истинность".
+  const hasContact = deal.CONTACT_ID && Number(deal.CONTACT_ID) > 0;
+  const hasLead = deal.LEAD_ID && Number(deal.LEAD_ID) > 0;
+
+  let clientSource; // объект с полями PHONE/EMAIL — контакт или лид
+
+  if (hasContact) {
+    clientSource = await getContact(deal.CONTACT_ID);
+  } else if (hasLead) {
+    // Контакт не привязан (например, при неполной конвертации лида) —
+    // берём телефон/email напрямую из исходного лида. У лида те же поля
+    // PHONE/EMAIL в том же формате, что и у контакта.
+    console.log(
+      `Сделка ${dealId}: нет привязанного контакта, беру данные клиента из лида ${deal.LEAD_ID}`
+    );
+    clientSource = await getLead(deal.LEAD_ID);
+  } else {
+    console.log(`Сделка ${dealId}: нет ни контакта, ни лида, проверка дублей пропущена`);
     return;
   }
 
-  const contact = await getContact(deal.CONTACT_ID);
-  const { duplicates, matchedBy } = await findDuplicateDeals(dealId, contact);
+  const { duplicates, matchedBy } = await findDuplicateDeals(dealId, clientSource);
 
   if (duplicates.length === 0) {
     console.log(`Сделка ${dealId}: дубликатов не найдено`);
