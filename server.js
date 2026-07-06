@@ -304,10 +304,18 @@ async function markDealAsDuplicate(dealId) {
   });
 }
 
-function buildDuplicateMessage(duplicates, hasOpenDuplicate) {
-  const header = hasOpenDuplicate
-    ? `⚠️ Обнаружены возможные дубликаты сделки (${duplicates.length}), есть открытые:`
-    : `ℹ️ Найдены сделки этого же контакта (${duplicates.length}), но все они уже закрыты (успех/провал) — информационно:`;
+function buildDuplicateMessage(duplicates, hasOpenDuplicate, isOriginal) {
+  let header;
+  if (isOriginal) {
+    // Текущая сделка — самая ранняя среди открытых дублей, то есть "оригинал".
+    // Даже если у неё есть закрытые дубли или более поздние открытые (которые сами получат флаг),
+    // с точки зрения этой сделки активных дублей, мешающих ей, нет.
+    header = `✅ Дублей на активных стадиях нет (эта сделка — самая ранняя среди совпадений по контакту). Найдено связанных сделок: ${duplicates.length}:`;
+  } else if (hasOpenDuplicate) {
+    header = `⚠️ Обнаружены возможные дубликаты сделки (${duplicates.length}), есть открытые:`;
+  } else {
+    header = `ℹ️ Найдены сделки этого же контакта (${duplicates.length}), но все они уже закрыты (успех/провал) — информационно:`;
+  }
   const lines = [header];
   duplicates.slice(0, 10).forEach((d) => {
     const url = dealUrl(d.ID);
@@ -409,7 +417,7 @@ async function processDeal(dealId) {
   const earliestOpenDealId = Math.min(...openCandidateIds);
   const currentIsEarliestOpen = Number(dealId) === earliestOpenDealId;
 
-  const message = buildDuplicateMessage(duplicates, hasOpenDuplicate);
+  const message = buildDuplicateMessage(duplicates, hasOpenDuplicate, currentIsEarliestOpen);
   await addTimelineComment(dealId, message);
 
   if (hasOpenDuplicate && !currentIsEarliestOpen) {
