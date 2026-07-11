@@ -28,6 +28,11 @@ const B24_WEBHOOK_URL = process.env.B24_WEBHOOK_URL;
 // Секрет для проверки исходящего вебхука Битрикс24 (application_token из настроек вебхука)
 const B24_APP_TOKEN = process.env.B24_APP_TOKEN || '';
 
+// STAGE_ID стадии "Спам" — сделки на этой стадии формально закрыты (SEMANTICS: F),
+// но если среди дублей есть сделка именно на этой стадии, всё равно считаем
+// текущую сделку дублем (ставим флаг), независимо от статуса остальных дублей.
+const SPAM_STAGE_ID = process.env.SPAM_STAGE_ID || 'UC_H1A47U';
+
 if (!B24_WEBHOOK_URL) {
   console.error('ОШИБКА: не задана переменная окружения B24_WEBHOOK_URL');
   process.exit(1);
@@ -302,9 +307,11 @@ async function markDealAsDuplicate(dealId) {
   });
 }
 
-function buildDuplicateMessage(duplicates, hasOpenDuplicate, isOriginal) {
+function buildDuplicateMessage(duplicates, hasOpenDuplicate, isOriginal, hasSpamDuplicate) {
   let header;
-  if (isOriginal) {
+  if (hasSpamDuplicate) {
+    header = `🚫 Среди дублей есть сделка на стадии «Спам» (${duplicates.length} связанных сделок):`;
+  } else if (isOriginal) {
     // Текущая сделка — самая ранняя среди открытых дублей, то есть "оригинал".
     // Даже если у неё есть закрытые дубли или более поздние открытые (которые сами получат флаг),
     // с точки зрения этой сделки активных дублей, мешающих ей, нет.
@@ -412,6 +419,12 @@ async function processDeal(dealId) {
   const openDuplicates = duplicates.filter((_, i) => openFlags[i]);
   const hasOpenDuplicate = openDuplicates.length > 0;
 
+  // Отдельная проверка: есть ли среди дублей сделка на стадии "Спам".
+  // Формально эта стадия закрыта (SEMANTICS: F), но наличие такого дубля
+  // всё равно считаем поводом пометить текущую сделку как дубль —
+  // независимо от статуса остальных найденных сделок.
+  const hasSpamDuplicate = duplicates.some((d) => d.STAGE_ID === SPAM_STAGE_ID);
+
   // "Оригинал" ищем только среди ОТКРЫТЫХ сделок — текущая новая сделка
   // всегда считается открытой (она только что создана), закрытые дубли
   // (успех/провал) в расчёт эталона не берём вообще.
@@ -420,10 +433,15 @@ async function processDeal(dealId) {
   const earliestOpenDealId = Math.min(...openCandidateIds);
   const currentIsEarliestOpen = Number(dealId) === earliestOpenDealId;
 
-  const message = buildDuplicateMessage(duplicates, hasOpenDuplicate, currentIsEarliestOpen);
+  const message = buildDuplicateMessage(duplicates, hasOpenDuplicate, currentIsEarliestOpen, hasSpamDuplicate);
   await addTimelineComment(dealId, message);
 
-  if (hasOpenDuplicate && !currentIsEarliestOpen) {
+  if (hasSpamDuplicate) {
+    await markDealAsDuplicate(dealId);
+    console.log(
+      `Сделка ${dealId}: поле UF_CRM_1783286815 установлено в 1 (среди дублей есть сделка на стадии "Спам")`
+    );
+  } else if (hasOpenDuplicate && !currentIsEarliestOpen) {
     await markDealAsDuplicate(dealId);
     console.log(
       `Сделка ${dealId}: поле UF_CRM_1783286815 установлено в 1 (есть открытый дубль, оригинал — сделка ${earliestOpenDealId})`
