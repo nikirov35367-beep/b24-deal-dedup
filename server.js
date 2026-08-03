@@ -635,6 +635,89 @@ app.get('/api/dashboard-data', async (req, res) => {
   }
 });
 
+// Фиксированная цена за лид (в рублях) для источников с известной стоимостью привлечения.
+// Ключ — SOURCE_ID (STATUS_ID из справочника crm.status.list, ENTITY_ID=SOURCE).
+const FIXED_LEAD_PRICE_BY_SOURCE = {
+  '1': 22, // DMP
+  '2': 27, // DMP РЕАЛ
+};
+
+/**
+ * API для CEO-страницы: цена квалифицированного лида и цена встречи по источникам.
+ * Логика: для источников с фиксированной ценой лида (DMP/DMP РЕАЛ) считаем
+ *   стоимость привлечения = кол-во лидов × фикс. цена за лид,
+ * для остальных источников бюджет вводится вручную на клиенте (как в основном
+ * дашборде) — сервер лишь отдаёт кол-во лидов, квал и встреч по каждому источнику,
+ * а расчёт цены за квал/встречу для источников без фикс. цены доделывает клиент.
+ *
+ * Дубли (UF_CRM_1783286815 = 1) исключаются из всех расчётов конверсии,
+ * как и в основном дашборде.
+ */
+app.get('/api/ceo-dashboard-data', async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    const filter = {};
+    if (from) filter['>=DATE_CREATE'] = `${from}T00:00:00`;
+    if (to) filter['<=DATE_CREATE'] = `${to}T23:59:59`;
+
+    const deals = await callB24List('crm.deal.list', {
+      filter,
+      select: [
+        'ID',
+        'SOURCE_ID',
+        'DATE_CREATE',
+        'UF_CRM_1784287318', // Квал
+        'UF_CRM_1784287360', // Встреча
+        'UF_CRM_1783286815', // Дубль
+      ],
+    });
+
+    const sourceMap = await getSourceMap();
+
+    // Исключаем дубли из всех расчётов на этой странице.
+    const nonDuplicateDeals = deals.filter((d) => Number(d.UF_CRM_1783286815) !== 1);
+
+    // Группируем по источнику: кол-во лидов, квал, встреч.
+    const bySource = new Map();
+    for (const deal of nonDuplicateDeals) {
+      const key = deal.SOURCE_ID || '';
+      if (!bySource.has(key)) {
+        bySource.set(key, { leads: 0, qual: 0, meetings: 0 });
+      }
+      const bucket = bySource.get(key);
+      bucket.leads += 1;
+      if (Number(deal.UF_CRM_1784287318) === 1) bucket.qual += 1;
+      if (Number(deal.UF_CRM_1784287360) === 1) bucket.meetings += 1;
+    }
+
+    const sources = Array.from(bySource.entries())
+      .map(([sourceId, bucket]) => {
+        const fixedLeadPrice = FIXED_LEAD_PRICE_BY_SOURCE[sourceId] ?? null;
+        return {
+          sourceId,
+          name: sourceMap.get(sourceId) || (sourceId ? sourceId : 'Не указан'),
+          leads: bucket.leads,
+          qual: bucket.qual,
+          meetings: bucket.meetings,
+          fixedLeadPrice, // null, если для этого источника нет фиксированной цены
+        };
+      })
+      .sort((a, b) => b.leads - a.leads);
+
+    res.json({
+      period: { from: from || null, to: to || null },
+      totalDeals: deals.length,
+      totalNonDuplicateDeals: nonDuplicateDeals.length,
+      sources,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('Ошибка получения данных для CEO-дашборда:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Проверка живости сервиса (для healthcheck платформы деплоя, ожидающей ответ на "/")
 app.get('/', (req, res) => res.status(200).send('ok'));
 
