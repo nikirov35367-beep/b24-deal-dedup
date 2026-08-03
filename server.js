@@ -538,6 +538,7 @@ app.get('/api/dashboard-data', async (req, res) => {
         'DATE_CREATE',
         'CLOSED',
         'STAGE_SEMANTIC_ID',
+        'UF_CRM_1784287318', // Квал: 1 = сделка была квалифицирована, 0/пусто = нет
       ],
     });
 
@@ -593,6 +594,12 @@ app.get('/api/dashboard-data', async (req, res) => {
       .filter((d) => d.STAGE_SEMANTIC_ID === 'S')
       .reduce((sum, d) => sum + (parseFloat(d.OPPORTUNITY) || 0), 0);
 
+    // Конверсия в "Квал" — считается по полю UF_CRM_1784287318 (1 = квалифицирована),
+    // а не по текущей стадии сделки: сделка может быть уже дальше по воронке,
+    // но признак "была квалифицирована" остаётся зафиксированным в этом поле.
+    const qualCount = deals.filter((d) => Number(d.UF_CRM_1784287318) === 1).length;
+    const qualConversion = deals.length > 0 ? (qualCount / deals.length) * 100 : 0;
+
     res.json({
       period: { from: from || null, to: to || null, source: source || null },
       totalDeals: deals.length,
@@ -600,6 +607,8 @@ app.get('/api/dashboard-data', async (req, res) => {
       sources,
       allSources,
       totalWonAmount,
+      qualCount,
+      qualConversion,
       generatedAt: new Date().toISOString(),
     });
   } catch (err) {
