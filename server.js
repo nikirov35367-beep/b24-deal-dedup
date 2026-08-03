@@ -519,11 +519,12 @@ async function getStageInfoMap() {
  */
 app.get('/api/dashboard-data', async (req, res) => {
   try {
-    const { from, to } = req.query;
+    const { from, to, source } = req.query;
 
     const filter = {};
     if (from) filter['>=DATE_CREATE'] = `${from}T00:00:00`;
     if (to) filter['<=DATE_CREATE'] = `${to}T23:59:59`;
+    if (source) filter['SOURCE_ID'] = source;
 
     // Тянем все сделки за период одним постраничным обходом.
     const deals = await callB24List('crm.deal.list', {
@@ -579,16 +580,25 @@ app.get('/api/dashboard-data', async (req, res) => {
       }))
       .sort((a, b) => b.count - a.count);
 
+    // Полный справочник источников (для выпадающего списка на фронтенде) —
+    // не зависит от текущего фильтра по source, иначе список сузился бы
+    // до одного пункта после применения фильтра.
+    const allSources = Array.from(sourceMap.entries()).map(([sourceId, name]) => ({
+      sourceId,
+      name,
+    }));
+
     // Сумма по успешным сделкам (для справки, если понадобится).
     const totalWonAmount = deals
       .filter((d) => d.STAGE_SEMANTIC_ID === 'S')
       .reduce((sum, d) => sum + (parseFloat(d.OPPORTUNITY) || 0), 0);
 
     res.json({
-      period: { from: from || null, to: to || null },
+      period: { from: from || null, to: to || null, source: source || null },
       totalDeals: deals.length,
       stages,
       sources,
+      allSources,
       totalWonAmount,
       generatedAt: new Date().toISOString(),
     });
