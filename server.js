@@ -36,6 +36,9 @@ const B24_APP_TOKEN = process.env.B24_APP_TOKEN || '';
 // Задаётся через переменную окружения, чтобы не хранить его в коде на GitHub.
 const CEO_DASHBOARD_PASSWORD = process.env.CEO_DASHBOARD_PASSWORD || '2283';
 
+// Пароль для доступа к основному дашборду ключевых метрик.
+const MAIN_DASHBOARD_PASSWORD = process.env.MAIN_DASHBOARD_PASSWORD || 'lEaPM)Z?';
+
 // STAGE_ID стадии "Спам" — сделки на этой стадии формально закрыты (SEMANTICS: F),
 // но если среди дублей есть сделка именно на этой стадии, всё равно считаем
 // текущую сделку дублем (ставим флаг), независимо от статуса остальных дублей.
@@ -527,12 +530,27 @@ async function getStageInfoMap() {
  */
 app.get('/api/dashboard-data', async (req, res) => {
   try {
+    // Проверка пароля основного дашборда — передаётся через заголовок X-Dashboard-Password.
+    const providedPassword = req.get('X-Dashboard-Password') || '';
+    if (providedPassword !== MAIN_DASHBOARD_PASSWORD) {
+      return res.status(401).json({ error: 'Неверный пароль' });
+    }
+
     const { from, to, source } = req.query;
 
     const filter = {};
     if (from) filter['>=DATE_CREATE'] = `${from}T00:00:00`;
     if (to) filter['<=DATE_CREATE'] = `${to}T23:59:59`;
-    if (source) filter['SOURCE_ID'] = source;
+    // source может содержать несколько ID через запятую — Битрикс24 REST API
+    // принимает массив значений в фильтре для выбора "любое из перечисленных".
+    if (source) {
+      const sourceIds = source.split(',').map((s) => s.trim()).filter(Boolean);
+      if (sourceIds.length === 1) {
+        filter['SOURCE_ID'] = sourceIds[0];
+      } else if (sourceIds.length > 1) {
+        filter['SOURCE_ID'] = sourceIds;
+      }
+    }
 
     // Тянем все сделки за период одним постраничным обходом.
     const deals = await callB24List('crm.deal.list', {
