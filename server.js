@@ -14,10 +14,14 @@
 
 const express = require('express');
 const axios = require('axios');
+const path = require('path');
 
 const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+
+// Отдаём дашборд как статический файл: /dashboard.html
+app.use(express.static(path.join(__dirname, 'public')));
 
 const PORT = process.env.PORT || 3000;
 
@@ -454,6 +458,145 @@ async function processDeal(dealId) {
     console.log(`Сделка ${dealId}: все дубли закрыты (успех/провал), флаг дубля не ставим`);
   }
 }
+
+/**
+ * Справочник источников сделок (SOURCE_ID -> человекочитаемое название).
+ * Кэшируется на время работы процесса, обновляется раз в 10 минут.
+ */
+let sourceMapCache = null;
+let sourceMapCacheAt = 0;
+const SOURCE_CACHE_TTL_MS = 10 * 60 * 1000;
+
+async function getSourceMap() {
+  const now = Date.now();
+  if (sourceMapCache && now - sourceMapCacheAt < SOURCE_CACHE_TTL_MS) {
+    return sourceMapCache;
+  }
+  const statuses = await callB24('crm.status.list', {
+    filter: { ENTITY_ID: 'SOURCE' },
+  });
+  const map = new Map();
+  (statuses || []).forEach((s) => map.set(s.STATUS_ID, s.NAME));
+  sourceMapCache = map;
+  sourceMapCacheAt = now;
+  return map;
+}
+
+/**
+ * Справочник стадий сделок (STAGE_ID -> { name, sort, semantics }).
+ * Нужен, чтобы отдавать дашборду человекочитаемые названия стадий
+ * в правильном порядке воронки (SORT), а не только внутренние ID.
+ */
+let stageInfoCache = null;
+let stageInfoCacheAt = 0;
+
+async function getStageInfoMap() {
+  const now = Date.now();
+  if (stageInfoCache && now - stageInfoCacheAt < STAGE_CACHE_TTL_MS) {
+    return stageInfoCache;
+  }
+  const statuses = await callB24('crm.status.list', {
+    filter: { ENTITY_ID: 'DEAL_STAGE' },
+  });
+  const map = new Map();
+  (statuses || []).forEach((s) => {
+    map.set(s.STATUS_ID, {
+      name: s.NAME,
+      sort: Number(s.SORT) || 0,
+      semantics: s.SEMANTICS,
+    });
+  });
+  stageInfoCache = map;
+  stageInfoCacheAt = now;
+  return map;
+}
+
+/**
+ * API дашборда: агрегированные метрики по воронке сделок за период.
+ * Query-параметры:
+ *   from — дата начала периода (YYYY-MM-DD), по умолчанию без ограничения снизу
+ *   to   — дата конца периода (YYYY-MM-DD), по умолчанию без ограничения сверху
+ */
+app.get('/api/dashboard-data', async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    const filter = {};
+    if (from) filter['>=DATE_CREATE'] = `${from}T00:00:00`;
+    if (to) filter['<=DATE_CREATE'] = `${to}T23:59:59`;
+
+    // Тянем все сделки за период одним постраничным обходом.
+    const deals = await callB24List('crm.deal.list', {
+      filter,
+      select: [
+        'ID',
+        'TITLE',
+        'STAGE_ID',
+        'SOURCE_ID',
+        'OPPORTUNITY',
+        'DATE_CREATE',
+        'CLOSED',
+        'STAGE_SEMANTIC_ID',
+      ],
+    });
+
+    const [stageInfoMap, sourceMap] = await Promise.all([getStageInfoMap(), getSourceMap()]);
+
+    // Группировка по стадиям — количество сделок на каждой стадии.
+    const byStage = new Map();
+    for (const deal of deals) {
+      const key = deal.STAGE_ID;
+      if (!byStage.has(key)) byStage.set(key, 0);
+      byStage.set(key, byStage.get(key) + 1);
+    }
+
+    const stages = Array.from(byStage.entries())
+      .map(([stageId, count]) => {
+        const info = stageInfoMap.get(stageId) || { name: stageId, sort: 9999, semantics: null };
+        return {
+          stageId,
+          name: info.name,
+          sort: info.sort,
+          semantics: info.semantics,
+          count,
+        };
+      })
+      .sort((a, b) => a.sort - b.sort);
+
+    // Группировка по источникам — количество лидов/сделок на источник.
+    const bySource = new Map();
+    for (const deal of deals) {
+      const key = deal.SOURCE_ID || '';
+      if (!bySource.has(key)) bySource.set(key, 0);
+      bySource.set(key, bySource.get(key) + 1);
+    }
+
+    const sources = Array.from(bySource.entries())
+      .map(([sourceId, count]) => ({
+        sourceId,
+        name: sourceMap.get(sourceId) || (sourceId ? sourceId : 'Не указан'),
+        count,
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    // Сумма по успешным сделкам (для справки, если понадобится).
+    const totalWonAmount = deals
+      .filter((d) => d.STAGE_SEMANTIC_ID === 'S')
+      .reduce((sum, d) => sum + (parseFloat(d.OPPORTUNITY) || 0), 0);
+
+    res.json({
+      period: { from: from || null, to: to || null },
+      totalDeals: deals.length,
+      stages,
+      sources,
+      totalWonAmount,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('Ошибка получения данных для дашборда:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Проверка живости сервиса (для healthcheck платформы деплоя, ожидающей ответ на "/")
 app.get('/', (req, res) => res.status(200).send('ok'));
