@@ -331,6 +331,7 @@ function render(data) {
     <div class="kpi-card"><div class="kpi-value">${totalLeads}</div><div class="kpi-label">В рабочей воронке</div></div>
     <div class="kpi-card"><div class="kpi-value">${data.qualCount}</div><div class="kpi-label">Квалифицировано</div></div>
     <div class="kpi-card"><div class="kpi-value">${data.qualConversion.toFixed(1)}%</div><div class="kpi-label">Конверсия в «Квал»</div></div>
+    <div class="kpi-card"><div class="kpi-value">${data.qualFromDozvonConversion.toFixed(1)}%</div><div class="kpi-label">Конверсия в «Квал» из дозвона (без НБТ)</div></div>
     <div class="kpi-card"><div class="kpi-value">${wonCount}</div><div class="kpi-label">Успешных сделок</div></div>
     <div class="kpi-card"><div class="kpi-value">${overallConversion}%</div><div class="kpi-label">Общая конверсия в успех</div></div>
     <div class="kpi-card"><div class="kpi-value">${spamCount}</div><div class="kpi-label">🚫 Спам</div></div>
