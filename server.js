@@ -37,6 +37,10 @@ const B24_APP_TOKEN = process.env.B24_APP_TOKEN || '';
 // текущую сделку дублем (ставим флаг), независимо от статуса остальных дублей.
 const SPAM_STAGE_ID = process.env.SPAM_STAGE_ID || 'UC_H1A47U';
 
+// STAGE_ID стадии "НБТ" (не берёт трубку) — сделки на этой стадии считаются
+// "недозвоном" и исключаются из расчёта конверсии в "Квал из дозвона".
+const NBT_STAGE_ID = process.env.NBT_STAGE_ID || 'UC_7JBKLS';
+
 if (!B24_WEBHOOK_URL) {
   console.error('ОШИБКА: не задана переменная окружения B24_WEBHOOK_URL');
   process.exit(1);
@@ -604,6 +608,14 @@ app.get('/api/dashboard-data', async (req, res) => {
     const qualCount = nonDuplicateDeals.filter((d) => Number(d.UF_CRM_1784287318) === 1).length;
     const qualConversion = nonDuplicateDeals.length > 0 ? (qualCount / nonDuplicateDeals.length) * 100 : 0;
 
+    // Конверсия в "Квал из дозвона" — тот же расчёт, но дополнительно исключаем
+    // сделки на стадии "НБТ" (недозвон) из знаменателя: "дозвон" здесь означает
+    // "любая сделка, кроме зависшей на НБТ", а не отдельное поле в CRM.
+    const dozvonDeals = nonDuplicateDeals.filter((d) => d.STAGE_ID !== NBT_STAGE_ID);
+    const qualFromDozvonCount = dozvonDeals.filter((d) => Number(d.UF_CRM_1784287318) === 1).length;
+    const qualFromDozvonConversion =
+      dozvonDeals.length > 0 ? (qualFromDozvonCount / dozvonDeals.length) * 100 : 0;
+
     res.json({
       period: { from: from || null, to: to || null, source: source || null },
       totalDeals: deals.length,
@@ -613,6 +625,8 @@ app.get('/api/dashboard-data', async (req, res) => {
       totalWonAmount,
       qualCount,
       qualConversion,
+      qualFromDozvonCount,
+      qualFromDozvonConversion,
       generatedAt: new Date().toISOString(),
     });
   } catch (err) {
