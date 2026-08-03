@@ -539,6 +539,7 @@ app.get('/api/dashboard-data', async (req, res) => {
         'CLOSED',
         'STAGE_SEMANTIC_ID',
         'UF_CRM_1784287318', // Квал: 1 = сделка была квалифицирована, 0/пусто = нет
+        'UF_CRM_1783286815', // Дубль: 1 = сделка помечена как дубль
       ],
     });
 
@@ -597,8 +598,11 @@ app.get('/api/dashboard-data', async (req, res) => {
     // Конверсия в "Квал" — считается по полю UF_CRM_1784287318 (1 = квалифицирована),
     // а не по текущей стадии сделки: сделка может быть уже дальше по воронке,
     // но признак "была квалифицирована" остаётся зафиксированным в этом поле.
-    const qualCount = deals.filter((d) => Number(d.UF_CRM_1784287318) === 1).length;
-    const qualConversion = deals.length > 0 ? (qualCount / deals.length) * 100 : 0;
+    // Сделки, помеченные как дубль (UF_CRM_1783286815 = 1), полностью исключаются
+    // из расчёта — и из числителя, и из знаменателя, — чтобы не искажать конверсию.
+    const nonDuplicateDeals = deals.filter((d) => Number(d.UF_CRM_1783286815) !== 1);
+    const qualCount = nonDuplicateDeals.filter((d) => Number(d.UF_CRM_1784287318) === 1).length;
+    const qualConversion = nonDuplicateDeals.length > 0 ? (qualCount / nonDuplicateDeals.length) * 100 : 0;
 
     res.json({
       period: { from: from || null, to: to || null, source: source || null },
