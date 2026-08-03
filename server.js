@@ -705,18 +705,27 @@ app.get('/api/ceo-dashboard-data', async (req, res) => {
 
     const sourceMap = await getSourceMap();
 
-    // Исключаем дубли из всех расчётов на этой странице.
+    // Дубли не исключаются из общего числа лидов — за них тоже было заплачено,
+    // и для честной "прозрачной" цены лида их нужно учитывать. А вот квал и
+    // встречи считаем только среди НЕ-дублей — дубль в принципе не может
+    // быть отдельно квалифицирован или назначена встреча по нему.
     const nonDuplicateDeals = deals.filter((d) => Number(d.UF_CRM_1783286815) !== 1);
 
-    // Группируем по источнику: кол-во лидов, квал, встреч.
+    // Группируем по источнику: кол-во лидов (все сделки), квал и встречи (не-дубли).
     const bySource = new Map();
+    for (const deal of deals) {
+      const key = deal.SOURCE_ID || '';
+      if (!bySource.has(key)) {
+        bySource.set(key, { leads: 0, qual: 0, meetings: 0 });
+      }
+      bySource.get(key).leads += 1;
+    }
     for (const deal of nonDuplicateDeals) {
       const key = deal.SOURCE_ID || '';
       if (!bySource.has(key)) {
         bySource.set(key, { leads: 0, qual: 0, meetings: 0 });
       }
       const bucket = bySource.get(key);
-      bucket.leads += 1;
       if (Number(deal.UF_CRM_1784287318) === 1) bucket.qual += 1;
       if (Number(deal.UF_CRM_1784287360) === 1) bucket.meetings += 1;
     }
