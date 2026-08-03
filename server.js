@@ -32,6 +32,10 @@ const B24_WEBHOOK_URL = process.env.B24_WEBHOOK_URL;
 // Секрет для проверки исходящего вебхука Битрикс24 (application_token из настроек вебхука)
 const B24_APP_TOKEN = process.env.B24_APP_TOKEN || '';
 
+// Пароль для доступа к CEO-разделу (стоимость лида/квала/встречи по источникам).
+// Задаётся через переменную окружения, чтобы не хранить его в коде на GitHub.
+const CEO_DASHBOARD_PASSWORD = process.env.CEO_DASHBOARD_PASSWORD || '2283';
+
 // STAGE_ID стадии "Спам" — сделки на этой стадии формально закрыты (SEMANTICS: F),
 // но если среди дублей есть сделка именно на этой стадии, всё равно считаем
 // текущую сделку дублем (ставим флаг), независимо от статуса остальных дублей.
@@ -655,6 +659,14 @@ const FIXED_LEAD_PRICE_BY_SOURCE = {
  */
 app.get('/api/ceo-dashboard-data', async (req, res) => {
   try {
+    // Проверка пароля — передаётся через заголовок X-Ceo-Password.
+    // Сравнение происходит только на сервере, поэтому просмотр исходного
+    // кода страницы в браузере не даёт доступа к паролю.
+    const providedPassword = req.get('X-Ceo-Password') || '';
+    if (providedPassword !== CEO_DASHBOARD_PASSWORD) {
+      return res.status(401).json({ error: 'Неверный пароль' });
+    }
+
     const { from, to } = req.query;
 
     const filter = {};

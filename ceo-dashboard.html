@@ -117,9 +117,41 @@
 
   .loading, .error { text-align: center; padding: 60px 20px; color: var(--text-dim); }
   .error { color: var(--danger); }
+
+  .auth-screen {
+    max-width: 360px;
+    margin: 120px auto;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 32px 28px;
+    text-align: center;
+  }
+  .auth-screen h2 { font-size: 18px; margin: 0 0 6px; }
+  .auth-screen p { color: var(--text-dim); font-size: 13px; margin: 0 0 20px; }
+  .auth-screen input {
+    width: 100%; background: var(--card-bg-2); border: 1px solid var(--border); border-radius: 8px;
+    color: var(--text); padding: 12px 14px; font-size: 16px; text-align: center; margin-bottom: 14px;
+    letter-spacing: 4px;
+  }
+  .auth-screen button {
+    width: 100%; background: var(--accent); color: white; border: none; border-radius: 8px;
+    padding: 12px; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  .auth-screen .auth-error { color: var(--danger); font-size: 12px; margin-top: 10px; min-height: 16px; }
 </style>
 </head>
 <body>
+
+<div id="authScreen" class="auth-screen">
+  <h2>🔒 Доступ ограничен</h2>
+  <p>Введите пароль для просмотра отчёта</p>
+  <input type="password" id="passwordInput" placeholder="Пароль" maxlength="20" autofocus>
+  <button onclick="tryLogin()">Войти</button>
+  <div class="auth-error" id="authError"></div>
+</div>
+
+<div id="mainApp" style="display:none">
 
 <div class="header">
   <h1>💰 Стоимость лида</h1>
@@ -148,10 +180,13 @@
   <div class="loading">Загрузка данных из CRM…</div>
 </div>
 
+</div>
+
 <script>
 const API_BASE = window.location.origin;
 let currentData = null;
 let budgets = JSON.parse(localStorage.getItem('ceoSourceBudgets') || '{}');
+let ceoPassword = sessionStorage.getItem('ceoPassword') || '';
 
 function formatDate(d) { return d.toISOString().slice(0, 10); }
 
@@ -186,7 +221,15 @@ async function loadData() {
   if (to) params.set('to', to);
 
   try {
-    const res = await fetch(`${API_BASE}/api/ceo-dashboard-data?${params.toString()}`);
+    const res = await fetch(`${API_BASE}/api/ceo-dashboard-data?${params.toString()}`, {
+      headers: { 'X-Ceo-Password': ceoPassword },
+    });
+    if (res.status === 401) {
+      // Пароль оказался неверным (или устарел) — сбрасываем и просим ввести заново.
+      sessionStorage.removeItem('ceoPassword');
+      showAuthScreen('Неверный пароль. Попробуйте снова.');
+      return;
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     currentData = data;
@@ -195,6 +238,43 @@ async function loadData() {
     document.getElementById('content').innerHTML = `<div class="error">Ошибка загрузки: ${err.message}</div>`;
   }
 }
+
+function showAuthScreen(errorMsg) {
+  document.getElementById('mainApp').style.display = 'none';
+  document.getElementById('authScreen').style.display = 'block';
+  document.getElementById('authError').textContent = errorMsg || '';
+  document.getElementById('passwordInput').value = '';
+  document.getElementById('passwordInput').focus();
+}
+
+async function tryLogin() {
+  const input = document.getElementById('passwordInput').value.trim();
+  if (!input) return;
+
+  ceoPassword = input;
+
+  // Проверяем пароль реальным запросом к API — сервер сам решает, верный он или нет.
+  const res = await fetch(`${API_BASE}/api/ceo-dashboard-data`, {
+    headers: { 'X-Ceo-Password': ceoPassword },
+  });
+
+  if (res.status === 401) {
+    document.getElementById('authError').textContent = 'Неверный пароль';
+    document.getElementById('passwordInput').value = '';
+    document.getElementById('passwordInput').focus();
+    return;
+  }
+
+  // Пароль верный — сохраняем на время сессии вкладки и показываем дашборд.
+  sessionStorage.setItem('ceoPassword', ceoPassword);
+  document.getElementById('authScreen').style.display = 'none';
+  document.getElementById('mainApp').style.display = 'block';
+  loadData();
+}
+
+document.getElementById('passwordInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') tryLogin();
+});
 
 function getLeadPrice(source) {
   if (source.fixedLeadPrice != null) return source.fixedLeadPrice;
@@ -281,7 +361,15 @@ function render(data) {
   });
 }
 
-loadData();
+// При открытии страницы: если пароль уже был введён в этой вкладке (сохранён
+// в sessionStorage), показываем дашборд сразу; иначе — экран ввода пароля.
+if (ceoPassword) {
+  document.getElementById('authScreen').style.display = 'none';
+  document.getElementById('mainApp').style.display = 'block';
+  loadData();
+} else {
+  showAuthScreen();
+}
 </script>
 
 </body>
