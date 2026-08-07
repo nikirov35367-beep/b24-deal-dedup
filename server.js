@@ -757,6 +757,87 @@ app.get('/api/ceo-dashboard-data', async (req, res) => {
   }
 });
 
+/** Извлечь домен из поля COMMENTS сделки, где он записан в формате "Домен: значение". */
+function extractDomainFromComments(comments) {
+  if (!comments) return null;
+  const match = comments.match(/Домен:\s*([^\n\r]+)/i);
+  if (!match) return null;
+  const value = match[1].trim();
+  return value || null;
+}
+
+/**
+ * API для CEO-страницы: конверсия по доменам (сегмент внутри COMMENTS сделки,
+ * формат "Домен: значение"). Логика идентична /api/ceo-dashboard-data,
+ * но группировка идёт по домену, а не по SOURCE_ID, и без привязки к фиксированным
+ * ценам за лид (для доменов таких цен нет — только сырые числа лидов/квала/встреч).
+ */
+app.get('/api/ceo-domains-data', async (req, res) => {
+  try {
+    const providedPassword = req.get('X-Ceo-Password') || '';
+    if (providedPassword !== CEO_DASHBOARD_PASSWORD) {
+      return res.status(401).json({ error: 'Неверный пароль' });
+    }
+
+    const { from, to } = req.query;
+
+    const filter = {};
+    if (from) filter['>=DATE_CREATE'] = `${from}T00:00:00`;
+    if (to) filter['<=DATE_CREATE'] = `${to}T23:59:59`;
+
+    const deals = await callB24List('crm.deal.list', {
+      filter,
+      select: [
+        'ID',
+        'COMMENTS',
+        'DATE_CREATE',
+        'UF_CRM_1784287318', // Квал
+        'UF_CRM_1784287360', // Встреча
+        'UF_CRM_1783286815', // Дубль
+      ],
+    });
+
+    // Как и в основном CEO-отчёте: общее число лидов включает дубли (за них
+    // тоже заплачено), а квал/встречи считаются только среди не-дублей.
+    const nonDuplicateDeals = deals.filter((d) => Number(d.UF_CRM_1783286815) !== 1);
+
+    const byDomain = new Map();
+    for (const deal of deals) {
+      const domain = extractDomainFromComments(deal.COMMENTS) || 'Не указан';
+      if (!byDomain.has(domain)) byDomain.set(domain, { leads: 0, qual: 0, meetings: 0 });
+      byDomain.get(domain).leads += 1;
+    }
+    for (const deal of nonDuplicateDeals) {
+      const domain = extractDomainFromComments(deal.COMMENTS) || 'Не указан';
+      if (!byDomain.has(domain)) byDomain.set(domain, { leads: 0, qual: 0, meetings: 0 });
+      const bucket = byDomain.get(domain);
+      if (Number(deal.UF_CRM_1784287318) === 1) bucket.qual += 1;
+      if (Number(deal.UF_CRM_1784287360) === 1) bucket.meetings += 1;
+    }
+
+    const domains = Array.from(byDomain.entries())
+      .map(([domain, bucket]) => ({
+        domain,
+        leads: bucket.leads,
+        qual: bucket.qual,
+        meetings: bucket.meetings,
+        qualConversion: bucket.leads > 0 ? (bucket.qual / bucket.leads) * 100 : 0,
+        meetingConversion: bucket.leads > 0 ? (bucket.meetings / bucket.leads) * 100 : 0,
+      }))
+      .sort((a, b) => b.leads - a.leads);
+
+    res.json({
+      period: { from: from || null, to: to || null },
+      totalDeals: deals.length,
+      domains,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('Ошибка получения данных по доменам для CEO-страницы:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Проверка живости сервиса (для healthcheck платформы деплоя, ожидающей ответ на "/")
 app.get('/', (req, res) => res.status(200).send('ok'));
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Стоимость лида — обзор для руководителя</title>
+<title>Конверсия по доменам — обзор для руководителя</title>
 <style>
   :root {
     --bg: #0b0e1a;
@@ -26,9 +26,15 @@
     color: var(--text);
     padding: 32px 24px;
   }
-  .header { max-width: 1100px; margin: 0 auto 28px; }
+  .header { max-width: 1100px; margin: 0 auto 20px; }
   h1 { font-size: 26px; font-weight: 700; margin: 0 0 6px; }
   .subtitle { color: var(--text-dim); font-size: 14px; }
+
+  .back-link { max-width: 1100px; margin: 0 auto 20px; }
+  .back-link a {
+    display: inline-block; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;
+    padding: 8px 16px; color: var(--accent); text-decoration: none; font-size: 13px; font-weight: 600;
+  }
 
   .toolbar {
     max-width: 1100px;
@@ -61,59 +67,26 @@
 
   .container { max-width: 1100px; margin: 0 auto; }
 
-  .cards-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 18px;
-    margin-bottom: 20px;
-  }
-
-  .source-card {
+  .card {
     background: var(--card-bg);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 22px 24px;
-  }
-  .source-name { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
-  .source-leads { color: var(--text-dim); font-size: 12px; margin-bottom: 18px; }
-
-  .price-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    padding: 10px 0;
-    border-top: 1px solid var(--border);
-  }
-  .price-row:first-of-type { border-top: none; }
-  .price-label { font-size: 13px; color: var(--text-dim); }
-  .price-value { font-size: 20px; font-weight: 700; }
-  .price-value.qual { color: var(--warning); }
-  .price-value.meeting { color: var(--success); }
-  .price-value.na { color: var(--text-dim); font-size: 14px; font-weight: 400; }
-
-  .budget-input-wrap { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--border); }
-  .budget-input-wrap label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 6px; }
-  .budget-input-wrap input {
-    width: 100%; background: var(--card-bg-2); border: 1px solid var(--border); border-radius: 8px;
-    color: var(--text); padding: 8px 10px; font-size: 13px;
-  }
-  .fixed-price-badge {
-    display: inline-block; background: rgba(108,140,255,0.15); color: var(--accent);
-    font-size: 10px; font-weight: 600; padding: 3px 8px; border-radius: 6px; margin-top: 14px;
+    padding: 20px 24px;
   }
 
-  .summary-card {
-    background: linear-gradient(135deg, var(--card-bg), var(--card-bg-2));
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 24px;
-    margin-bottom: 24px;
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 20px;
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left; color: var(--text-dim); font-weight: 500; padding: 10px 8px;
+    border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em;
   }
-  .summary-item .value { font-size: 26px; font-weight: 700; }
-  .summary-item .label { color: var(--text-dim); font-size: 12px; margin-top: 4px; }
+  th.num, td.num { text-align: right; }
+  td { padding: 12px 8px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(108,140,255,0.05); }
+  .domain-name { font-weight: 600; }
+  .pct { font-weight: 700; }
+  .pct.qual { color: var(--warning); }
+  .pct.meeting { color: var(--success); }
 
   .loading, .error { text-align: center; padding: 60px 20px; color: var(--text-dim); }
   .error { color: var(--danger); }
@@ -154,14 +127,12 @@
 <div id="mainApp" style="display:none">
 
 <div class="header">
-  <h1>💰 Стоимость лида</h1>
+  <h1>🌐 Конверсия по доменам</h1>
   <div class="subtitle" id="subtitle">Загрузка данных...</div>
 </div>
 
-<div style="max-width:1100px;margin:0 auto 20px">
-  <a href="/ceo-domains.html" style="display:inline-block;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:8px 16px;color:var(--accent);text-decoration:none;font-size:13px;font-weight:600">
-    🌐 Конверсия по доменам →
-  </a>
+<div class="back-link">
+  <a href="/ceo-dashboard.html">← К стоимости лида</a>
 </div>
 
 <div class="toolbar">
@@ -191,7 +162,8 @@
 <script>
 const API_BASE = window.location.origin;
 let currentData = null;
-let budgets = JSON.parse(localStorage.getItem('ceoSourceBudgets') || '{}');
+// Переиспользуем тот же пароль, что и на основной CEO-странице — один
+// вход открывает доступ ко всем страницам CEO-раздела в этой вкладке.
 let ceoPassword = sessionStorage.getItem('ceoPassword') || '';
 
 function formatDate(d) { return d.toISOString().slice(0, 10); }
@@ -227,11 +199,10 @@ async function loadData() {
   if (to) params.set('to', to);
 
   try {
-    const res = await fetch(`${API_BASE}/api/ceo-dashboard-data?${params.toString()}`, {
+    const res = await fetch(`${API_BASE}/api/ceo-domains-data?${params.toString()}`, {
       headers: { 'X-Ceo-Password': ceoPassword },
     });
     if (res.status === 401) {
-      // Пароль оказался неверным (или устарел) — сбрасываем и просим ввести заново.
       sessionStorage.removeItem('ceoPassword');
       showAuthScreen('Неверный пароль. Попробуйте снова.');
       return;
@@ -259,8 +230,7 @@ async function tryLogin() {
 
   ceoPassword = input;
 
-  // Проверяем пароль реальным запросом к API — сервер сам решает, верный он или нет.
-  const res = await fetch(`${API_BASE}/api/ceo-dashboard-data`, {
+  const res = await fetch(`${API_BASE}/api/ceo-domains-data`, {
     headers: { 'X-Ceo-Password': ceoPassword },
   });
 
@@ -271,7 +241,6 @@ async function tryLogin() {
     return;
   }
 
-  // Пароль верный — сохраняем на время сессии вкладки и показываем дашборд.
   sessionStorage.setItem('ceoPassword', ceoPassword);
   document.getElementById('authScreen').style.display = 'none';
   document.getElementById('mainApp').style.display = 'block';
@@ -282,93 +251,40 @@ document.getElementById('passwordInput').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') tryLogin();
 });
 
-function getLeadPrice(source) {
-  if (source.fixedLeadPrice != null) return source.fixedLeadPrice;
-  const budget = parseFloat(budgets[source.sourceId]);
-  if (!budget || source.leads === 0) return null;
-  return budget / source.leads;
-}
-
 function render(data) {
   document.getElementById('subtitle').textContent =
-    `Данные за период · Обновлено: ${new Date(data.generatedAt).toLocaleString('ru-RU')}`;
+    `Доменов: ${data.domains.length} · Всего сделок: ${data.totalDeals} · Обновлено: ${new Date(data.generatedAt).toLocaleString('ru-RU')}`;
 
-  // Общая сводка
-  const totalLeads = data.sources.reduce((sum, s) => sum + s.leads, 0);
-  const totalQual = data.sources.reduce((sum, s) => sum + s.qual, 0);
-  const totalMeetings = data.sources.reduce((sum, s) => sum + s.meetings, 0);
+  let rows = data.domains.map((d) => `
+    <tr>
+      <td class="domain-name">${d.domain}</td>
+      <td class="num">${d.leads}</td>
+      <td class="num">${d.qual}</td>
+      <td class="num pct qual">${d.qualConversion.toFixed(1)}%</td>
+      <td class="num">${d.meetings}</td>
+      <td class="num pct meeting">${d.meetingConversion.toFixed(1)}%</td>
+    </tr>
+  `).join('');
 
-  let html = `<div class="summary-card">
-    <div class="summary-item"><div class="value">${totalLeads}</div><div class="label">Всего лидов</div></div>
-    <div class="summary-item"><div class="value">${totalQual}</div><div class="label">Квалифицировано</div></div>
-    <div class="summary-item"><div class="value">${totalMeetings}</div><div class="label">Встреч назначено</div></div>
-  </div>`;
-
-  html += `<div class="cards-grid">`;
-
-  data.sources.forEach((s) => {
-    const leadPrice = getLeadPrice(s);
-
-    let qualPriceHtml, meetingPriceHtml;
-
-    if (leadPrice == null) {
-      qualPriceHtml = `<span class="price-value na">укажите расход</span>`;
-      meetingPriceHtml = `<span class="price-value na">укажите расход</span>`;
-    } else {
-      const qualPrice = s.qual > 0 ? (leadPrice * s.leads / s.qual) : null;
-      const meetingPrice = s.meetings > 0 ? (leadPrice * s.leads / s.meetings) : null;
-      qualPriceHtml = qualPrice != null
-        ? `<span class="price-value qual">${qualPrice.toFixed(0)} ₽</span>`
-        : `<span class="price-value na">нет квал</span>`;
-      meetingPriceHtml = meetingPrice != null
-        ? `<span class="price-value meeting">${meetingPrice.toFixed(0)} ₽</span>`
-        : `<span class="price-value na">нет встреч</span>`;
-    }
-
-    const fixedBadge = s.fixedLeadPrice != null
-      ? `<div class="fixed-price-badge">Фикс. цена лида: ${s.fixedLeadPrice} ₽</div>`
-      : '';
-
-    const budgetInput = s.fixedLeadPrice == null
-      ? `<div class="budget-input-wrap">
-          <label>Расход на источник, ₽</label>
-          <input type="number" min="0" placeholder="0" data-source="${s.sourceId}"
-                 value="${budgets[s.sourceId] ?? ''}" class="budget-field">
-        </div>`
-      : '';
-
-    html += `<div class="source-card">
-      <div class="source-name">${s.name}</div>
-      <div class="source-leads">${s.leads} лидов · ${s.qual} квал · ${s.meetings} встреч</div>
-      <div class="price-row">
-        <div class="price-label">Цена квал-лида</div>
-        ${qualPriceHtml}
-      </div>
-      <div class="price-row">
-        <div class="price-label">Цена встречи</div>
-        ${meetingPriceHtml}
-      </div>
-      ${fixedBadge}
-      ${budgetInput}
-    </div>`;
-  });
-
-  html += `</div>`;
-
-  document.getElementById('content').innerHTML = html;
-
-  document.querySelectorAll('.budget-field').forEach((input) => {
-    input.addEventListener('input', (e) => {
-      const sourceId = e.target.dataset.source;
-      budgets[sourceId] = e.target.value;
-      localStorage.setItem('ceoSourceBudgets', JSON.stringify(budgets));
-      render(currentData); // пересчитать цены сразу
-    });
-  });
+  document.getElementById('content').innerHTML = `
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>Домен</th>
+            <th class="num">Лидов</th>
+            <th class="num">Квал</th>
+            <th class="num">Конв. в квал</th>
+            <th class="num">Встреч</th>
+            <th class="num">Конв. во встречу</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
 }
 
-// При открытии страницы: если пароль уже был введён в этой вкладке (сохранён
-// в sessionStorage), показываем дашборд сразу; иначе — экран ввода пароля.
 if (ceoPassword) {
   document.getElementById('authScreen').style.display = 'none';
   document.getElementById('mainApp').style.display = 'block';
