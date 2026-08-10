@@ -558,7 +558,9 @@ app.get('/api/dashboard-data', async (req, res) => {
     // Доступ разрешён по паролю обычного дашборда ИЛИ по CEO-паролю —
     // CEO-страница переиспользует тот же эндпоинт данных, добавляя свой
     // собственный UI (фильтр по ответственному, переход к цене лида).
-    const providedPassword = req.get('X-Dashboard-Password') || '';
+    // Пароль может прийти в любом из двух заголовков, в зависимости от того,
+    // какая страница делает запрос.
+    const providedPassword = req.get('X-Dashboard-Password') || req.get('X-Ceo-Password') || '';
     if (providedPassword !== MAIN_DASHBOARD_PASSWORD && providedPassword !== CEO_DASHBOARD_PASSWORD) {
       return res.status(401).json({ error: 'Неверный пароль' });
     }
