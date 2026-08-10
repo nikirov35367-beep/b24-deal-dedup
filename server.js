@@ -471,6 +471,31 @@ async function processDeal(dealId) {
 }
 
 /**
+ * Справочник пользователей портала (ID -> человекочитаемое имя).
+ * Нужен для отображения ФИО ответственного вместо голого ASSIGNED_BY_ID.
+ * Кэшируется на время работы процесса, обновляется раз в 10 минут.
+ */
+let userMapCache = null;
+let userMapCacheAt = 0;
+const USER_CACHE_TTL_MS = 10 * 60 * 1000;
+
+async function getUserMap() {
+  const now = Date.now();
+  if (userMapCache && now - userMapCacheAt < USER_CACHE_TTL_MS) {
+    return userMapCache;
+  }
+  const users = await callB24List('user.get', {});
+  const map = new Map();
+  (users || []).forEach((u) => {
+    const fullName = [u.LAST_NAME, u.NAME].filter(Boolean).join(' ') || u.EMAIL || `Пользователь #${u.ID}`;
+    map.set(String(u.ID), fullName);
+  });
+  userMapCache = map;
+  userMapCacheAt = now;
+  return map;
+}
+
+/**
  * Справочник источников сделок (SOURCE_ID -> человекочитаемое название).
  * Кэшируется на время работы процесса, обновляется раз в 10 минут.
  */
@@ -530,13 +555,15 @@ async function getStageInfoMap() {
  */
 app.get('/api/dashboard-data', async (req, res) => {
   try {
-    // Проверка пароля основного дашборда — передаётся через заголовок X-Dashboard-Password.
+    // Доступ разрешён по паролю обычного дашборда ИЛИ по CEO-паролю —
+    // CEO-страница переиспользует тот же эндпоинт данных, добавляя свой
+    // собственный UI (фильтр по ответственному, переход к цене лида).
     const providedPassword = req.get('X-Dashboard-Password') || '';
-    if (providedPassword !== MAIN_DASHBOARD_PASSWORD) {
+    if (providedPassword !== MAIN_DASHBOARD_PASSWORD && providedPassword !== CEO_DASHBOARD_PASSWORD) {
       return res.status(401).json({ error: 'Неверный пароль' });
     }
 
-    const { from, to, source } = req.query;
+    const { from, to, source, assignedBy } = req.query;
 
     const filter = {};
     if (from) filter['>=DATE_CREATE'] = `${from}T00:00:00`;
@@ -551,6 +578,16 @@ app.get('/api/dashboard-data', async (req, res) => {
         filter['SOURCE_ID'] = sourceIds;
       }
     }
+    // assignedBy — фильтр по ответственному менеджеру (ASSIGNED_BY_ID), нужен
+    // только на CEO-странице, но параметр общий для обеих страниц.
+    if (assignedBy) {
+      const managerIds = assignedBy.split(',').map((s) => s.trim()).filter(Boolean);
+      if (managerIds.length === 1) {
+        filter['ASSIGNED_BY_ID'] = managerIds[0];
+      } else if (managerIds.length > 1) {
+        filter['ASSIGNED_BY_ID'] = managerIds;
+      }
+    }
 
     // Тянем все сделки за период одним постраничным обходом.
     const deals = await callB24List('crm.deal.list', {
@@ -558,6 +595,7 @@ app.get('/api/dashboard-data', async (req, res) => {
       select: [
         'ID',
         'TITLE',
+        'ASSIGNED_BY_ID',
         'STAGE_ID',
         'SOURCE_ID',
         'OPPORTUNITY',
@@ -569,7 +607,11 @@ app.get('/api/dashboard-data', async (req, res) => {
       ],
     });
 
-    const [stageInfoMap, sourceMap] = await Promise.all([getStageInfoMap(), getSourceMap()]);
+    const [stageInfoMap, sourceMap, userMap] = await Promise.all([
+      getStageInfoMap(),
+      getSourceMap(),
+      getUserMap(),
+    ]);
 
     // Группировка по стадиям — количество сделок на каждой стадии.
     const byStage = new Map();
@@ -616,6 +658,29 @@ app.get('/api/dashboard-data', async (req, res) => {
       name,
     }));
 
+    // Группировка по ответственным менеджерам — количество сделок на каждого.
+    const byManager = new Map();
+    for (const deal of deals) {
+      const key = deal.ASSIGNED_BY_ID || '';
+      if (!byManager.has(key)) byManager.set(key, 0);
+      byManager.set(key, byManager.get(key) + 1);
+    }
+
+    const managers = Array.from(byManager.entries())
+      .map(([managerId, count]) => ({
+        managerId,
+        name: userMap.get(managerId) || (managerId ? `Пользователь #${managerId}` : 'Не назначен'),
+        count,
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    // Полный справочник пользователей (для выпадающего списка на CEO-странице) —
+    // не зависит от текущего фильтра по assignedBy, по тому же принципу, что allSources.
+    const allManagers = Array.from(userMap.entries()).map(([managerId, name]) => ({
+      managerId,
+      name,
+    }));
+
     // Сумма по успешным сделкам (для справки, если понадобится).
     const totalWonAmount = deals
       .filter((d) => d.STAGE_SEMANTIC_ID === 'S')
@@ -639,11 +704,13 @@ app.get('/api/dashboard-data', async (req, res) => {
       dozvonDeals.length > 0 ? (qualFromDozvonCount / dozvonDeals.length) * 100 : 0;
 
     res.json({
-      period: { from: from || null, to: to || null, source: source || null },
+      period: { from: from || null, to: to || null, source: source || null, assignedBy: assignedBy || null },
       totalDeals: deals.length,
       stages,
       sources,
       allSources,
+      managers,
+      allManagers,
       totalWonAmount,
       qualCount,
       qualConversion,
