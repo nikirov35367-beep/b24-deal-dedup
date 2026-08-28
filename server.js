@@ -693,7 +693,12 @@ app.get('/api/dashboard-data', async (req, res) => {
     // но признак "была квалифицирована" остаётся зафиксированным в этом поле.
     // Сделки, помеченные как дубль (UF_CRM_1783286815 = 1), полностью исключаются
     // из расчёта — и из числителя, и из знаменателя, — чтобы не искажать конверсию.
-    const nonDuplicateDeals = deals.filter((d) => Number(d.UF_CRM_1783286815) !== 1);
+    // Также исключаются сделки на стадии "Спам" с ответственными ID 21 и 1 —
+    // они не должны влиять на конверсию в "Квал" вовсе.
+    const EXCLUDED_SPAM_MANAGER_IDS = ['21', '1'];
+    const nonDuplicateDeals = deals
+      .filter((d) => Number(d.UF_CRM_1783286815) !== 1)
+      .filter((d) => !(d.STAGE_ID === SPAM_STAGE_ID && EXCLUDED_SPAM_MANAGER_IDS.includes(String(d.ASSIGNED_BY_ID))));
     const qualCount = nonDuplicateDeals.filter((d) => Number(d.UF_CRM_1784287318) === 1).length;
     const qualConversion = nonDuplicateDeals.length > 0 ? (qualCount / nonDuplicateDeals.length) * 100 : 0;
 
