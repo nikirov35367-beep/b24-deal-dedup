@@ -918,6 +918,46 @@ app.get('/', (req, res) => res.status(200).send('ok'));
 // Проверка живости сервиса
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
+
+// Разовый прогон всех сделок со стадии "Новый лид" через поиск дублей.
+// Запуск: POST /api/rerun-new-leads с заголовком X-Ceo-Password или X-Dashboard-Password.
+let rerunInProgress = false;
+app.post('/api/rerun-new-leads', async (req, res) => {
+  const pw = req.get('X-Ceo-Password') || req.get('X-Dashboard-Password');
+  if (pw !== CEO_DASHBOARD_PASSWORD && pw !== (MAIN_DASHBOARD_PASSWORD)) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  if (rerunInProgress) return res.status(409).json({ error: 'already running' });
+  const stageId = req.query.stage || 'UC_6HT340';
+  try {
+    const deals = await callB24List('crm.deal.list', {
+      filter: { STAGE_ID: stageId },
+      select: ['ID'],
+      order: { ID: 'ASC' },
+    });
+    rerunInProgress = true;
+    res.json({ started: true, total: deals.length });
+    (async () => {
+      let ok = 0, failed = 0;
+      for (const d of deals) {
+        try {
+          await processDeal(d.ID);
+          ok++;
+        } catch (e) {
+          failed++;
+          console.error(`rerun: сделка ${d.ID} ошибка`, e.message);
+        }
+        await new Promise(r => setTimeout(r, 700));
+      }
+      console.log(`rerun: готово. Всего ${deals.length}, ok ${ok}, ошибок ${failed}`);
+      rerunInProgress = false;
+    })();
+  } catch (e) {
+    rerunInProgress = false;
+    if (!res.headersSent) res.status(500).json({ error: e.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Сервис поиска дубликатов сделок запущен на порту ${PORT}`);
 });
